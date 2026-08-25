@@ -3,6 +3,7 @@ import os
 import json
 import pytz
 import logging
+import asyncio
 from typing import Any, List, Dict
 from datetime import datetime
 from collections import Counter
@@ -10,15 +11,14 @@ from collections import Counter
 import discord
 from discord.ext import commands
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
-from prompts import get_summary_agent_prompt
+from prompts import get_intent_agent_prompt, get_summary_agent_prompt
 
 from dotenv import load_dotenv
 load_dotenv(".env")
 
 # =============================================
-# Variables
 # logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -42,6 +42,8 @@ llm = ChatOpenAI(
 )
 
 # Message Records
+global count
+count = 0
 messages_history = []
 
 # =============================================
@@ -89,13 +91,21 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    count :int = 0
+
+    global count
+
+    # check user intent
+    intent_system_prompt = get_intent_agent_prompt(origin_query=message.content)
+    response = await llm.ainvoke([SystemMessage(content=intent_system_prompt)])
+    json_response = _safe_parse_json(response.content)
+    intent = json_response.get("Intent", False)
 
     mes = {
         "index": count,
         "content": message.content,
         "timestamp": current_time_taiwan.strftime("%Y-%m-%d %H:%M:%S"),
-        "user": str(message.author)
+        "user": str(message.author),
+        "intent": intent
     }
     messages_history.append(mes)
     count += 1
@@ -107,50 +117,42 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # scenario 1: user tag CPSAgent 
-    if bot.user.mentioned_in(message):
-        
-        user_prompt = message.clean_content.replace(f"@{bot.user.name}", "").strip()
-
-        """
-        # scenario 1-1
-        @CPSAgent --> summary historical messages 
-        """      
-        if not user_prompt:
+    # @CPSAgent or user has a summary intent -> summary historical messages 
+    if bot.user.mentioned_in(message) or intent:
             
-            logger.info(f"Historical messages: {messages_history}")
-            str_message = _stringify(messages_history)
+        logger.info(f"Historical messages: {messages_history}")
+        str_message = _stringify(messages_history)
 
-            user_counts = _count_user_messages(messages_history)
-            str_user_counts = _stringify(user_counts)
-            logger.info(f"User message counts: {str_user_counts}")
-            
-            system_prompt = get_summary_agent_prompt(user_counts = str_user_counts, message_records = str_message)            
-            response = await llm.ainvoke([SystemMessage(content=system_prompt)])
-            json_response = _safe_parse_json(response.content)
-
-            title = json_response.get("Title", "無法取得標題")
-            summary = json_response.get("Summary", "無法取得內容")
-            participation = json_response.get("Participation", "無法取得參與度評估")
-
-            # discord embed message
-            embed = discord.Embed(
-                title=title,
-                color=0x5865F2
-            )
-            embed.add_field(
-                name="📝 會議摘要",
-                value=summary,
-                inline=False
-            )
-            embed.add_field(
-                name="👥 成員參與狀況分析",
-                value=participation,
-                inline=False
-            )
-
-            await message.reply(embed=embed)
+        user_counts = _count_user_messages(messages_history)
+        str_user_counts = _stringify(user_counts)
+        logger.info(f"User message counts: {str_user_counts}")
         
+        summary_system_prompt = get_summary_agent_prompt(user_counts = str_user_counts, message_records = str_message)            
+        response = await llm.ainvoke([SystemMessage(content=summary_system_prompt)])
+        json_response = _safe_parse_json(response.content)
+
+        title = json_response.get("Title", "無法取得標題")
+        summary = json_response.get("Summary", "無法取得內容")
+        participation = json_response.get("Participation", "無法取得參與度評估")
+
+        # discord embed message
+        embed = discord.Embed(
+            title=title,
+            color=0x5865F2
+        )
+        embed.add_field(
+            name="📝 會議摘要",
+            value=summary,
+            inline=False
+        )
+        embed.add_field(
+            name="👥 成員參與狀況分析",
+            value=participation,
+            inline=False
+        )
+
+        await message.reply(embed=embed)
+    
     await bot.process_commands(message)
 
 # health check

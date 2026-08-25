@@ -124,6 +124,3 @@ evaluation_results/
 *test.ipynb
 *.zip
 *.ipynb
-
-# exception for specific files
-!regressionAnalysis.ipynb
