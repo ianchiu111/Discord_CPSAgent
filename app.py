@@ -12,7 +12,8 @@ import discord
 from discord.ext import commands
 
 from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI
+# from langchain_openai import ChatOpenAI
+from utils.openai_utils import llm
 from prompts import get_intent_agent_prompt, get_summary_agent_prompt
 
 from dotenv import load_dotenv
@@ -33,17 +34,19 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# llm setup
-llm = ChatOpenAI(
-    model="gpt-4o",
-    openai_api_key=os.getenv("OPENAI_API_KEY"),
-    temperature=0,
-    verbose=False,
-)
+# # llm setup
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     openai_api_key=os.getenv("OPENAI_API_KEY"),
+#     temperature=0,
+#     verbose=False,
+# )
 
 # Message Records
-global count
-count = 0
+# 
+global frequency, phase
+frequency, phase = 0, 0
+
 messages_history = []
 
 # =============================================
@@ -75,65 +78,127 @@ def _stringify(obj: Any) -> str:
         return json.dumps(obj, ensure_ascii=False, indent=2)
     return str(obj)
 
-def _count_user_messages(messages_history: List[Dict]) -> Dict[str, int]:
+def _message_frequency(messages_history: List[Dict]) -> Dict[str, Any]:
     """
-    count the number of messages sent by each user
+    count the frequency of messages sent by each user
+    based on a dynamic threshold: 1 / (N + 1), where N is the total number of unique users.
+    output: {
+        "user name 1": frequency 1,
+        "user name 2": frequency 2,
+        "quiet_user": ["user name"]  which frequency percentage < 0.15
+    }
     """
-    user_counts = Counter(msg["user"] for msg in messages_history if "user" in msg)
-    
-    return dict(user_counts)
 
-# Check Connection
+    message_frequency = Counter(msg["user"] for msg in messages_history if "user" in msg)
+    num_users = len(message_frequency)
+    result: Dict[str, Any] = dict(message_frequency)
+
+    frequency_threshold = 2 * num_users + 1
+
+    total_frequency = sum(message_frequency.values())
+    if total_frequency > frequency_threshold:
+
+        dynamic_threshold = 1.0 / (num_users + 1)
+
+        quiet_users = [
+            user for user, count in message_frequency.items()
+            if (count / total_frequency) < dynamic_threshold
+        ]
+    else:
+        quiet_users = []
+
+    result["quiet_user"] = quiet_users
+    return result
+    
+
+# =============================================
+# Main Entry Point
+
 @bot.event
 async def on_ready():
+    """
+    Check Discord Bot Connection
+    """
     logger.info(f"✅ Bot 登入成功: {bot.user.name} (ID: {bot.user.id})")
     logger.info("--------------------------------")
 
 @bot.event
 async def on_message(message: discord.Message):
+    """
+    Monitor Conversation 
+    """
 
-    global count
+    if message.author.bot:
+        """
+        message.author.bot == True >>> message from chatbot
+        - need to ignore message from chatbot to avoid infinite loop
+        """
+        return
 
-    # check user intent
-    intent_system_prompt = get_intent_agent_prompt(origin_query=message.content)
-    response = await llm.ainvoke([SystemMessage(content=intent_system_prompt)])
-    json_response = _safe_parse_json(response.content)
-    intent = json_response.get("Intent", False)
+    global frequency
 
     mes = {
-        "index": count,
+        "index": frequency,
         "content": message.content,
         "timestamp": current_time_taiwan.strftime("%Y-%m-%d %H:%M:%S"),
         "user": str(message.author),
-        "intent": intent
     }
+    logger.info(f"收到訊息: \n{mes}")
     messages_history.append(mes)
-    count += 1
 
-    logger.info(f"收到訊息: {message.content} (來自: {message.author})")
+    # check user intent
+    intent_system_prompt = get_intent_agent_prompt(origin_query=messages_history)
+    intent_response = await llm.ainvoke([SystemMessage(content=intent_system_prompt)])
+    json_intent_response = _safe_parse_json(intent_response.content)
+    intent = json_intent_response.get("Intent", False)
+    logger.info(f"Index: {frequency},\n Intent: {intent}")
 
-    # message.author.bot == True -> message from chatbot
-    # ignore message from chatbot to avoid infinite loop
-    if message.author.bot:
+    if intent == "discussion":
+        frequency += 1
+
+        str_message_history = _stringify(messages_history)
+
+        message_frequency = _message_frequency(messages_history)
+        str_message_frequency = _stringify(message_frequency)
+
+        if message_frequency["quiet_user"] != []:
+            summary_system_prompt = get_summary_agent_prompt(message_frequency = str_message_frequency, message_history = str_message_history)            
+            summary_response = await llm.ainvoke([SystemMessage(content=summary_system_prompt)])
+            json_summary_response = _safe_parse_json(summary_response.content)
+
+            participation = json_summary_response.get("Participation", "無法取得參與度評估")
+
+            embed = discord.Embed(
+                title="👥 成員參與狀況分析",
+                description=participation,
+                color=0x5865F2
+            )
+
+            await message.reply(embed=embed)
+
         return
 
-    # @CPSAgent or user has a summary intent -> summary historical messages 
-    if bot.user.mentioned_in(message) or intent:
+    if bot.user.mentioned_in(message) or intent == "finished" :
+        """
+        Summary Phase 
+        - @CPSAgent
+        - intent == "finished" --> user has a summary intent
+        """
             
         logger.info(f"Historical messages: {messages_history}")
-        str_message = _stringify(messages_history)
+        str_message_history = _stringify(messages_history)
 
-        user_counts = _count_user_messages(messages_history)
-        str_user_counts = _stringify(user_counts)
-        logger.info(f"User message counts: {str_user_counts}")
+        message_frequency = _message_frequency(messages_history)
+        str_message_frequency = _stringify(message_frequency)
+        logger.info(f"User message frequency: {str_message_frequency}")
         
-        summary_system_prompt = get_summary_agent_prompt(user_counts = str_user_counts, message_records = str_message)            
-        response = await llm.ainvoke([SystemMessage(content=summary_system_prompt)])
-        json_response = _safe_parse_json(response.content)
+        summary_system_prompt = get_summary_agent_prompt(message_frequency = str_message_frequency, message_history = str_message_history)            
+        summary_response = await llm.ainvoke([SystemMessage(content=summary_system_prompt)])
+        json_summary_response = _safe_parse_json(summary_response.content)
 
-        title = json_response.get("Title", "無法取得標題")
-        summary = json_response.get("Summary", "無法取得內容")
-        participation = json_response.get("Participation", "無法取得參與度評估")
+        title = json_summary_response.get("Title", "無法取得標題")
+        summary =json_summary_response.get("Summary", "無法取得內容")
+        participation = json_summary_response.get("Participation", "無法取得參與度評估")
 
         # discord embed message
         embed = discord.Embed(
