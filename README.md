@@ -54,7 +54,7 @@ The system consists of three main components:
 2. **Whiteboard Service (React + Node.js):** Provides the collaborative canvas, REST APIs, and WebSocket synchronization.
 3. **Fly.io:** Hosts the Discord Bot and Whiteboard Service as separate cloud applications.
 
-![System Structure](systemStructure.png)
+![System Structure](images/systemStructure.png)
 
 
 ### Workflow
@@ -67,9 +67,9 @@ The system consists of three main components:
 6. The backend passes the extracted sticky notes to an LLM for analysis.
 7. The Discord Bot returns the analysis results to the channel.
 
-![demo-create-board](demo-create-board.png)
-![demo-analyze-board](demo-analyze-board.png)
-![Whiteboard](Whiteboard.png)
+![demo-create-board](images/demo-create-board.png)
+![demo-analyze-board](images/demo-analyze-board.png)
+![Whiteboard](images/Whiteboard.png)
 
 ## 3. Project Goals
 
