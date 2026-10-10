@@ -107,10 +107,6 @@ model_cache/
 *.swp
 *.swo
 
-# Note files
-memo
-memo.*
-
 
 # secret data
 secret/
@@ -124,3 +120,9 @@ evaluation_results/
 *test.ipynb
 *.zip
 *.ipynb
+
+
+# test
+/miro
+
+node_modules
